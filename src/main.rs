@@ -7,15 +7,28 @@ pub mod options;
 fn main() {
     let opts = Options::from_args();
     let uri = opts.uri.unwrap_or(String::from("redis://127.0.0.1/"));    
-    let result = get_connection(uri)
-        .map_err(redis_err)
-        .map(|cn| match opts.live {
-            true => live_commands(cn),
-            false => run_commands_til_eof(cn),
-        });
+    let result : Result<(), String>;
+    if let Some(channel) = opts.subscribe {
+        result = match get_connection(uri).map_err(redis_err) {
+            Ok(cn) => {
+                start_subscription_listener(cn,channel)
+            },
+            Err(e) => Err(e),
+        };
+    }else{
+        result = match get_connection(uri).map_err(redis_err) {
+            Ok(cn) => {
+                match opts.live {
+                    true => run_commands_linebyline(cn),
+                    false => run_commands_til_eof(cn),
+                }
+            },
+            Err(e) => Err(e),
+        }
+    }
 
     match result {
-        Ok(_) => {std::process::exit(0)},
+        Ok(_) => std::process::exit(0),
         Err(e) => {
             print!("{}", e);
             std::process::exit(-2)
@@ -23,7 +36,19 @@ fn main() {
     };
 }
 
-fn live_commands(mut con: Connection) -> Result<(), String> {
+fn start_subscription_listener(mut con: Connection, channel: String) -> Result<(), String>{
+    let mut pubsub = con.as_pubsub();
+    let _sub = pubsub.subscribe(channel)
+        .map_err(redis_err);
+    loop{
+        let msg = pubsub.get_message().map_err(redis_err)?;   
+        stdout().write_all(msg.get_payload_bytes()).map_err(|e| e.to_string())?;
+        println!();
+        stdout().flush().unwrap();
+    }
+}
+
+fn run_commands_linebyline(mut con: Connection) -> Result<(), String> {
     for read_attempt in stdin().lines(){
         let line = read_attempt.map_err(|e| e.to_string())?;
         if line == "quit" { std::process::exit(0); }
